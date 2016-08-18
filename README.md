@@ -1,3 +1,3 @@
 # grpc-client
 
-single grpc client
+singleton  grpc client
