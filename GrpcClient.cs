@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Configuration;
@@ -7,10 +7,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
 using Grpc.Health.V1;
-using QKPay.Framework.Collections.Extensions;
-using QKPay.Framework.Utils;
+using XX.Framework.Collections.Extensions;
+using XX.Framework.Utils;
 
-namespace QKPay.Framework.Rpc
+namespace XX.Framework.Rpc
 {
   public class GRPCClient
   {
