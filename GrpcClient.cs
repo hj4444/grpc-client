@@ -8,15 +8,17 @@ using System.Threading.Tasks;
 using Grpc.Core;
 using Grpc.Health.V1;
 using XX.Framework.Collections.Extensions;
+using XX.Framework.Extensions;
 using XX.Framework.Utils;
 
 namespace XX.Framework.Rpc
 {
   public class GRPCClient
   {
-    private static readonly ConcurrentDictionary<string, CachedItem> _cacheMap = new ConcurrentDictionary<string, CachedItem>();
+    private static readonly Dictionary<string, CachedItem> _cacheMap = new Dictionary<string, CachedItem>();
 
     private static readonly object _lock = new object();
+    private static readonly object _cacheObject = new object();
 
     private static Dictionary<string, IEnumerable<string>> _addressDict = null;
 
@@ -55,12 +57,30 @@ namespace XX.Framework.Rpc
       if (_cacheMap.IsEmpty()) return;
       var item = _cacheMap.First(f => { return f.Key == key; });
       if (item.Key.IsEmpty()) return;
-      if (item.Value.Channels.IsNotEmpty())
+      var channels = item.Value.Channels;
+      if (channels.IsNotEmpty())
       {
-        item.Value.Channels.ForEach(channel =>
+        var count = channels.Count();
+        for (int i = 0; i < count; i++)
         {
-          channel.ShutdownAsync().Wait();
-        });
+          var channel = channels.ElementAt(i);
+          try
+          {
+            channel.ConnectAsync(DateTime.Now.AddMilliseconds(100)).Wait();
+          }
+          catch
+          {
+            lock (_cacheObject)
+            {
+              var list = channels.ToList();
+              list.RemoveAll(r => r.Target == channel.Target);
+              item.Value.Channels = list;
+              _cacheMap.AddOrReplace(key, item.Value);
+            }
+
+            channel.ShutdownAsync().Wait();
+          }
+        };
       };
     }
 
@@ -74,10 +94,18 @@ namespace XX.Framework.Rpc
       {
         foreach (var channel in item.Channels.OrderBy(o => Guid.NewGuid()))
         {
-          if (channel.State == ChannelState.Idle || channel.State == ChannelState.Ready)
+          try
           {
-            currentChosenChannel = channel;
-            break;
+            if (channel.State == ChannelState.Idle || channel.State == ChannelState.Ready)
+            {
+              channel.ConnectAsync(DateTime.Now.AddMilliseconds(100)).Wait();
+              currentChosenChannel = channel;
+              break;
+            }
+          }
+          catch
+          {
+            channel.ShutdownAsync().Wait();
           }
         };
       }
@@ -109,26 +137,12 @@ namespace XX.Framework.Rpc
     });
     }
 
-    public static IEnumerable<Channel> Remove(string key)
-    {
-      if (!String.IsNullOrEmpty(key))
-      {
-        CachedItem item;
-        DisposeChannelsByKey(key);
-        if (_cacheMap.TryRemove(key, out item))
-        {
-          return item.Channels;
-        }
-      }
-      return null;
-    }
-
     public static void Set(string key, IEnumerable<Channel> channels)
     {
       Ensure.NotNullOrEmpty(key);
       if (channels.IsEmpty())
       {
-        Remove(key);
+        DisposeChannelsByKey(key);
       }
       else
       {
@@ -175,13 +189,12 @@ namespace XX.Framework.Rpc
         }
         else
         {
-          CachedItem item;
           DateTime oldThreshold = DateTime.UtcNow - _timeout;
           var expiredItems = _cacheMap.Where(i => i.Value.Updated < oldThreshold).Select(i => i.Key);
-          foreach (var key in expiredItems)
+          for (int i = 0; i < expiredItems.Count(); i++)
           {
+            var key = expiredItems.ElementAt(i);
             DisposeChannelsByKey(key);
-            _cacheMap.TryRemove(key, out item);
             InitWorkingChannelsByKey(key);
           }
         }
@@ -199,10 +212,15 @@ namespace XX.Framework.Rpc
       IList<Channel> channels = new List<Channel>();
       foreach (KeyValuePair<string, IEnumerable<string>> subAddress in _addressDict)
       {
+        var item = _cacheMap.FirstOrDefault(f => f.Key == subAddress.Key);
         foreach (var address in subAddress.Value)
         {
-          var channel = new Channel(address, ChannelCredentials.Insecure);
-          if (CheckIfConnectionIsWorking(channel)) channels.Add(channel);
+          var channel = item.Value?.Channels.FirstOrDefault(ch => ch.Target == address);
+          if (channel == null)
+          {
+            channel = new Channel(address, ChannelCredentials.Insecure);
+            if (CheckIfConnectionIsWorking(channel)) channels.Add(channel);
+          }
         }
       }
 
